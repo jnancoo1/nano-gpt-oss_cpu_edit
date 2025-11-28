@@ -36,8 +36,10 @@ class RMSNorm(torch.nn.Module):
         super().__init__()
         self.num_features = num_features
         self.eps = eps
+        # Changed to default float32 for CPU
+        dtype = torch.float32 if device is None or device.type == 'cpu' else torch.float32
         self.scale = torch.nn.Parameter(
-            torch.ones(num_features, device=device, dtype=torch.float32)
+            torch.ones(num_features, device=device, dtype=dtype)
         )
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
@@ -186,21 +188,25 @@ class AttentionBlock(torch.nn.Module):
         self.num_key_value_heads = config.num_key_value_heads
         # Only apply sliding window to every other layer
         self.sliding_window = config.sliding_window if layer_idx % 2 == 0 else 0
+        
+        # Use float32 for CPU instead of bfloat16
+        dtype = torch.float32 if device is None or device.type == 'cpu' else torch.bfloat16
+        
         self.sinks = torch.nn.Parameter(
-            torch.empty(config.num_attention_heads, device=device, dtype=torch.bfloat16)
+            torch.empty(config.num_attention_heads, device=device, dtype=dtype)
         )
         self.norm = RMSNorm(config.hidden_size, device=device)
         qkv_dim = config.head_dim * (
             config.num_attention_heads + 2 * config.num_key_value_heads
         )
         self.qkv = torch.nn.Linear(
-            config.hidden_size, qkv_dim, device=device, dtype=torch.bfloat16
+            config.hidden_size, qkv_dim, device=device, dtype=dtype
         )
         self.out = torch.nn.Linear(
             config.head_dim * config.num_attention_heads,
             config.hidden_size,
             device=device,
-            dtype=torch.bfloat16,
+            dtype=dtype,
         )
         self.sm_scale = 1 / math.sqrt(config.head_dim)
         self.rope = RotaryEmbedding(
@@ -268,8 +274,12 @@ class MLPBlock(torch.nn.Module):
         self.swiglu_limit = config.swiglu_limit
         self.world_size = dist.get_world_size() if dist.is_initialized() else 1
         self.norm = RMSNorm(config.hidden_size, device=device)
+        
+        # Use float32 for CPU instead of bfloat16
+        dtype = torch.float32 if device is None or device.type == 'cpu' else torch.bfloat16
+        
         self.gate = torch.nn.Linear(
-            config.hidden_size, config.num_experts, device=device, dtype=torch.bfloat16
+            config.hidden_size, config.num_experts, device=device, dtype=dtype
         )
         assert config.intermediate_size % self.world_size == 0
         
@@ -280,13 +290,13 @@ class MLPBlock(torch.nn.Module):
                     config.hidden_size, 
                     config.intermediate_size * 2 // self.world_size, 
                     device=device, 
-                    dtype=torch.bfloat16
+                    dtype=dtype
                 ),
                 torch.nn.Linear(
                     config.intermediate_size // self.world_size, 
                     config.hidden_size, 
                     device=device, 
-                    dtype=torch.bfloat16
+                    dtype=dtype
                 )
             ) for _ in range(config.num_experts)
         ])
@@ -362,8 +372,11 @@ class Transformer(torch.nn.Module):
         device: torch.device | None = None,
     ):
         super().__init__()
+        # Use float32 for CPU instead of bfloat16
+        dtype = torch.float32 if device is None or device.type == 'cpu' else torch.bfloat16
+        
         self.embedding = torch.nn.Embedding(
-            config.vocab_size, config.hidden_size, device=device, dtype=torch.bfloat16
+            config.vocab_size, config.hidden_size, device=device, dtype=dtype
         )
         self.block = torch.nn.ModuleList(
             [
@@ -377,7 +390,7 @@ class Transformer(torch.nn.Module):
             config.vocab_size,
             bias=False,
             device=device,
-            dtype=torch.bfloat16,
+            dtype=dtype,
         )
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
@@ -390,7 +403,7 @@ class Transformer(torch.nn.Module):
 
     @staticmethod
     def from_checkpoint(
-        path: str, device: str | torch.device = "cuda"
+        path: str, device: str | torch.device = "cpu"  # Changed default to "cpu"
     ) -> "Transformer":
         if not isinstance(device, torch.device):
             device = torch.device(device)
@@ -444,7 +457,7 @@ class Transformer(torch.nn.Module):
 
 class TokenGenerator:
     @torch.inference_mode()
-    def __init__(self, checkpoint: str, device: torch.device):
+    def __init__(self, checkpoint: str, device: torch.device = torch.device("cpu")):  # Changed default
         self.device = device
         self.model = Transformer.from_checkpoint("./", device=self.device)
 
